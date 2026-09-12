@@ -11,13 +11,47 @@ def required_env(name: str) -> str:
     return value
 
 
-def wordpress_server(prefix: str, url: str, token_env: str) -> dict:
+def env_enabled(name: str, default: bool = True) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def wordpress_server(url: str, token_env: str) -> dict:
     token = required_env(token_env)
     return {
         "transport": "http",
         "url": url,
         "headers": {"Authorization": f"Bearer {token}"},
     }
+
+
+def mount_wordpress_proxy(
+    gateway: FastMCP,
+    *,
+    site_name: str,
+    url: str,
+    token_env: str,
+    enabled_env: str,
+    default_enabled: bool = True,
+) -> None:
+    """Mount one WordPress MCP server as an independent proxy."""
+    if not env_enabled(enabled_env, default_enabled):
+        print(f"Skipping disabled WordPress upstream: {site_name}")
+        return
+
+    proxy_config = {
+        "mcpServers": {
+            site_name: wordpress_server(url, token_env),
+        }
+    }
+    proxy = FastMCP.as_proxy(
+        proxy_config,
+        name=f"{site_name} WordPress Upstream",
+    )
+    gateway.mount(proxy, namespace=f"wordpress_{site_name}")
+    print(f"Mounted WordPress upstream: {site_name} -> {url}")
 
 
 def build_gateway() -> FastMCP:
@@ -33,50 +67,52 @@ def build_gateway() -> FastMCP:
         additional_authorize_scopes=["openid", "profile", "email", "offline_access"],
     )
 
-    upstream_config = {
-        "mcpServers": {
-            "knoco_main": wordpress_server(
-                "knoco_main",
-                "https://knoco.com/wp-json/easy-mcp-ai/v1/mcp",
-                "KNOCO_MAIN_TOKEN",
-            ),
-            "knoco_institute": wordpress_server(
-                "knoco_institute",
-                "https://institute.knoco.com/wp-json/easy-mcp-ai/v1/mcp",
-                "KNOCO_INSTITUTE_TOKEN",
-            ),
-            "knoco_trainingtest": wordpress_server(
-                "knoco_trainingtest",
-                "https://trainingtest.knoco.com/wp-json/easy-mcp-ai/v1/mcp",
-                "KNOCO_TRAININGTEST_TOKEN",
-            ),
-            "cannonco_main": wordpress_server(
-                "cannonco_main",
-                "https://cannonco.net/wp-json/easy-mcp-ai/v1/mcp",
-                "CANNONCO_MAIN_TOKEN",
-            ),
-            "cannonco_books": wordpress_server(
-                "cannonco_books",
-                "https://books.cannonco.net/wp-json/easy-mcp-ai/v1/mcp",
-                "CANNONCO_BOOKS_TOKEN",
-            ),
-        }
-    }
-
-    upstream_proxy = FastMCP.as_proxy(
-        upstream_config,
-        name="Knoco WordPress Upstreams",
-    )
-
     gateway = FastMCP(
         name="Knoco Enterprise MCP Gateway",
         instructions=(
             "Unified, authenticated gateway for Knoco International and CannonCo "
-            "WordPress properties. Tool names are prefixed with their target site."
+            "WordPress properties. WordPress tools are namespaced by target site."
         ),
         auth=auth,
     )
-    gateway.mount(upstream_proxy, namespace="wordpress")
+
+    mount_wordpress_proxy(
+        gateway,
+        site_name="knoco_main",
+        url="https://knoco.com/wp-json/easy-mcp-ai/v1/mcp",
+        token_env="KNOCO_MAIN_TOKEN",
+        enabled_env="KNOCO_MAIN_ENABLED",
+    )
+    mount_wordpress_proxy(
+        gateway,
+        site_name="knoco_institute",
+        url="https://institute.knoco.com/wp-json/easy-mcp-ai/v1/mcp",
+        token_env="KNOCO_INSTITUTE_TOKEN",
+        enabled_env="KNOCO_INSTITUTE_ENABLED",
+    )
+    mount_wordpress_proxy(
+        gateway,
+        site_name="knoco_trainingtest",
+        url="https://trainingtest.knoco.com/wp-json/easy-mcp-ai/v1/mcp",
+        token_env="KNOCO_TRAININGTEST_TOKEN",
+        enabled_env="KNOCO_TRAININGTEST_ENABLED",
+    )
+    mount_wordpress_proxy(
+        gateway,
+        site_name="cannonco_main",
+        url="https://cannonco.net/wp-json/easy-mcp-ai/v1/mcp",
+        token_env="CANNONCO_MAIN_TOKEN",
+        enabled_env="CANNONCO_MAIN_ENABLED",
+    )
+    mount_wordpress_proxy(
+        gateway,
+        site_name="cannonco_books",
+        url="https://books.cannonco.net/wp-json/easy-mcp-ai/v1/mcp",
+        token_env="CANNONCO_BOOKS_TOKEN",
+        enabled_env="CANNONCO_BOOKS_ENABLED",
+        default_enabled=False,
+    )
+
     return gateway
 
 
