@@ -41,6 +41,8 @@ def mount_wordpress_proxy(
         print(f"Skipping disabled WordPress upstream: {site_name}")
         return
 
+    # Keep each WordPress property in its own proxy so sites can be toggled
+    # independently during maintenance and troubleshooting.
     proxy_config = {
         "mcpServers": {
             site_name: wordpress_server(url, token_env),
