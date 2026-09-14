@@ -1,9 +1,46 @@
 import os
+import base64
+import tempfile
+
+import msal
+import requests
 
 from fastmcp import FastMCP
+
 from fastmcp.server.auth.providers.azure import AzureProvider
 
+def cannon_graph_token() -> str:
+    tenant_id = required_env("CANNON_TENANT_ID")
+    client_id = required_env("CANNON_CLIENT_ID")
+    pfx_base64 = required_env("CANNON_CERT_PFX_BASE64")
+    pfx_password = required_env("CANNON_CERT_PASSWORD")
 
+    pfx_bytes = base64.b64decode(pfx_base64)
+
+    with tempfile.NamedTemporaryFile(suffix=".pfx") as tmp:
+        tmp.write(pfx_bytes)
+        tmp.flush()
+
+        app = msal.ConfidentialClientApplication(
+            client_id=client_id,
+            authority=f"https://login.microsoftonline.com/{tenant_id}",
+            client_credential={
+                "private_key": tmp.name,
+                "passphrase": pfx_password,
+            },
+        )
+
+        result = app.acquire_token_for_client(
+            scopes=["https://graph.microsoft.com/.default"]
+        )
+
+    if "access_token" not in result:
+        raise RuntimeError(
+            f"Cannon Graph authentication failed: "
+            f"{result.get('error_description', result)}"
+        )
+
+    return result["access_token"]
 def required_env(name: str) -> str:
     value = os.getenv(name)
     if not value:
