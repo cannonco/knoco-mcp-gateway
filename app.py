@@ -13,13 +13,17 @@ from fastmcp.server.auth.providers.azure import AzureProvider
 
 GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0"
 
+BUILD_ID = "20260914-knoco-m365-diagnostic-v1"
+
 
 def required_env(name: str) -> str:
     value = os.getenv(name)
+
     if not value:
         raise RuntimeError(
             f"Required environment variable is missing: {name}"
         )
+
     return value
 
 
@@ -53,12 +57,15 @@ def cannon_graph_token() -> str:
     tenant_id = required_env(
         "CANNON_TENANT_ID"
     )
+
     client_id = required_env(
         "CANNON_CLIENT_ID"
     )
+
     pfx_base64 = required_env(
         "CANNON_CERT_PFX_BASE64"
     )
+
     pfx_password = required_env(
         "CANNON_CERT_PASSWORD"
     )
@@ -115,33 +122,22 @@ def cannon_graph_token() -> str:
             cert_der
         ).hexdigest()
 
-        app = (
-            msal.ConfidentialClientApplication(
-                client_id=client_id,
-                authority=(
-                    "https://login.microsoftonline.com/"
-                    f"{tenant_id}"
-                ),
-                client_credential={
-                    "private_key": (
-                        private_key_pem
-                    ),
-                    "thumbprint": (
-                        thumbprint
-                    ),
-                },
-            )
+        app = msal.ConfidentialClientApplication(
+            client_id=client_id,
+            authority=(
+                "https://login.microsoftonline.com/"
+                f"{tenant_id}"
+            ),
+            client_credential={
+                "private_key": private_key_pem,
+                "thumbprint": thumbprint,
+            },
         )
 
-        result = (
-            app.acquire_token_for_client(
-                scopes=[
-                    (
-                        "https://graph.microsoft.com/"
-                        ".default"
-                    )
-                ]
-            )
+        result = app.acquire_token_for_client(
+            scopes=[
+                "https://graph.microsoft.com/.default"
+            ]
         )
 
         if "access_token" not in result:
@@ -152,18 +148,12 @@ def cannon_graph_token() -> str:
 
             description = result.get(
                 "error_description",
-                (
-                    "No additional error "
-                    "information returned."
-                ),
+                "No additional error information returned.",
             )
 
             raise RuntimeError(
-                (
-                    "Microsoft Entra token "
-                    "acquisition failed: "
-                    f"{error}: {description}"
-                )
+                "Microsoft Entra token acquisition failed: "
+                f"{error}: {description}"
             )
 
         return result[
@@ -172,10 +162,8 @@ def cannon_graph_token() -> str:
 
     except Exception as exc:
         raise RuntimeError(
-            (
-                "Unable to authenticate "
-                f"CANNON-Jarvis-MCP: {exc}"
-            )
+            "Unable to authenticate "
+            f"CANNON-Jarvis-MCP: {exc}"
         ) from exc
 
 
@@ -217,12 +205,10 @@ def cannon_graph_request(
 
     if not response.ok:
         raise RuntimeError(
-            (
-                "Cannon Graph request failed "
-                f"({response.status_code}) "
-                f"{method} {endpoint}: "
-                f"{response.text}"
-            )
+            "Cannon Graph request failed "
+            f"({response.status_code}) "
+            f"{method} {endpoint}: "
+            f"{response.text}"
         )
 
     if not response.content:
@@ -246,12 +232,15 @@ def knoco_graph_token() -> str:
     tenant_id = required_env(
         "KNOCO_TENANT_ID"
     )
+
     client_id = required_env(
         "KNOCO_CLIENT_ID"
     )
+
     pfx_base64 = required_env(
         "KNOCO_CERT_PFX_BASE64"
     )
+
     pfx_password = required_env(
         "KNOCO_CERT_PASSWORD"
     )
@@ -308,33 +297,22 @@ def knoco_graph_token() -> str:
             cert_der
         ).hexdigest()
 
-        app = (
-            msal.ConfidentialClientApplication(
-                client_id=client_id,
-                authority=(
-                    "https://login.microsoftonline.com/"
-                    f"{tenant_id}"
-                ),
-                client_credential={
-                    "private_key": (
-                        private_key_pem
-                    ),
-                    "thumbprint": (
-                        thumbprint
-                    ),
-                },
-            )
+        app = msal.ConfidentialClientApplication(
+            client_id=client_id,
+            authority=(
+                "https://login.microsoftonline.com/"
+                f"{tenant_id}"
+            ),
+            client_credential={
+                "private_key": private_key_pem,
+                "thumbprint": thumbprint,
+            },
         )
 
-        result = (
-            app.acquire_token_for_client(
-                scopes=[
-                    (
-                        "https://graph.microsoft.com/"
-                        ".default"
-                    )
-                ]
-            )
+        result = app.acquire_token_for_client(
+            scopes=[
+                "https://graph.microsoft.com/.default"
+            ]
         )
 
         if "access_token" not in result:
@@ -345,18 +323,12 @@ def knoco_graph_token() -> str:
 
             description = result.get(
                 "error_description",
-                (
-                    "No additional error "
-                    "information returned."
-                ),
+                "No additional error information returned.",
             )
 
             raise RuntimeError(
-                (
-                    "Microsoft Entra token "
-                    "acquisition failed: "
-                    f"{error}: {description}"
-                )
+                "Microsoft Entra token acquisition failed: "
+                f"{error}: {description}"
             )
 
         return result[
@@ -365,11 +337,9 @@ def knoco_graph_token() -> str:
 
     except Exception as exc:
         raise RuntimeError(
-            (
-                "Unable to authenticate "
-                "Knoco M365 Operations MCP: "
-                f"{exc}"
-            )
+            "Unable to authenticate "
+            "Knoco M365 Operations MCP: "
+            f"{exc}"
         ) from exc
 
 
@@ -411,12 +381,10 @@ def knoco_graph_request(
 
     if not response.ok:
         raise RuntimeError(
-            (
-                "Knoco Graph request failed "
-                f"({response.status_code}) "
-                f"{method} {endpoint}: "
-                f"{response.text}"
-            )
+            "Knoco Graph request failed "
+            f"({response.status_code}) "
+            f"{method} {endpoint}: "
+            f"{response.text}"
         )
 
     if not response.content:
@@ -467,22 +435,20 @@ def mount_wordpress_proxy(
         default_enabled,
     ):
         print(
-            (
-                "Skipping disabled "
-                "WordPress upstream: "
-                f"{site_name}"
-            )
+            "Skipping disabled "
+            "WordPress upstream: "
+            f"{site_name}",
+            flush=True,
         )
+
         return
 
     proxy_config = {
         "mcpServers": {
-            site_name: (
-                wordpress_server(
-                    url,
-                    token_env,
-                )
-            ),
+            site_name: wordpress_server(
+                url,
+                token_env,
+            )
         }
     }
 
@@ -502,10 +468,96 @@ def mount_wordpress_proxy(
     )
 
     print(
-        (
-            "Mounted WordPress upstream: "
-            f"{site_name} -> {url}"
-        )
+        "Mounted WordPress upstream: "
+        f"{site_name} -> {url}",
+        flush=True,
+    )
+
+
+# ============================================================
+# Gateway diagnostics
+# ============================================================
+
+def register_gateway_diagnostics(
+    gateway: FastMCP,
+) -> None:
+    """
+    Register harmless diagnostic tools used to verify
+    which gateway build ChatGPT is actually reaching.
+    """
+
+    @gateway.tool()
+    def gateway_build_info() -> dict:
+        """
+        Return the running gateway build marker and
+        integration-registration state.
+
+        READ ONLY.
+        """
+
+        return {
+            "build_id": BUILD_ID,
+            "gateway": (
+                "Knoco Enterprise MCP Gateway"
+            ),
+            "cannon_m365_enabled": env_enabled(
+                "CANNON_M365_ENABLED",
+                default=True,
+            ),
+            "knoco_m365_enabled": env_enabled(
+                "KNOCO_M365_ENABLED",
+                default=True,
+            ),
+            "cannon_environment_present": {
+                "tenant_id": bool(
+                    os.getenv(
+                        "CANNON_TENANT_ID"
+                    )
+                ),
+                "client_id": bool(
+                    os.getenv(
+                        "CANNON_CLIENT_ID"
+                    )
+                ),
+                "certificate": bool(
+                    os.getenv(
+                        "CANNON_CERT_PFX_BASE64"
+                    )
+                ),
+                "certificate_password": bool(
+                    os.getenv(
+                        "CANNON_CERT_PASSWORD"
+                    )
+                ),
+            },
+            "knoco_environment_present": {
+                "tenant_id": bool(
+                    os.getenv(
+                        "KNOCO_TENANT_ID"
+                    )
+                ),
+                "client_id": bool(
+                    os.getenv(
+                        "KNOCO_CLIENT_ID"
+                    )
+                ),
+                "certificate": bool(
+                    os.getenv(
+                        "KNOCO_CERT_PFX_BASE64"
+                    )
+                ),
+                "certificate_password": bool(
+                    os.getenv(
+                        "KNOCO_CERT_PASSWORD"
+                    )
+                ),
+            },
+        }
+
+    print(
+        "Registered gateway diagnostic tools. "
+        f"Build ID: {BUILD_ID}",
+        flush=True,
     )
 
 
@@ -580,10 +632,8 @@ def register_cannon_m365_tools(
             != "cannonconet.sharepoint.com"
         ):
             raise ValueError(
-                (
-                    "This tool is restricted "
-                    "to cannonconet.sharepoint.com."
-                )
+                "This tool is restricted "
+                "to cannonconet.sharepoint.com."
             )
 
         if not site_path.startswith(
@@ -784,11 +834,10 @@ def register_cannon_m365_tools(
         }
 
     print(
-        (
-            "Registered Cannon "
-            "Microsoft 365 read-only "
-            "diagnostic tools."
-        )
+        "Registered Cannon "
+        "Microsoft 365 read-only "
+        "diagnostic tools.",
+        flush=True,
     )
 
 
@@ -862,10 +911,8 @@ def register_knoco_m365_tools(
             != "knoco.sharepoint.com"
         ):
             raise ValueError(
-                (
-                    "This tool is restricted "
-                    "to knoco.sharepoint.com."
-                )
+                "This tool is restricted "
+                "to knoco.sharepoint.com."
             )
 
         if not site_path.startswith(
@@ -1066,11 +1113,10 @@ def register_knoco_m365_tools(
         }
 
     print(
-        (
-            "Registered Knoco "
-            "Microsoft 365 read-only "
-            "diagnostic tools."
-        )
+        "Registered Knoco "
+        "Microsoft 365 read-only "
+        "diagnostic tools.",
+        flush=True,
     )
 
 
@@ -1083,6 +1129,12 @@ def build_gateway() -> FastMCP:
     Build the unified Knoco/Cannon
     MCP gateway.
     """
+
+    print(
+        "Starting Knoco Enterprise MCP Gateway. "
+        f"Build ID: {BUILD_ID}",
+        flush=True,
+    )
 
     auth = AzureProvider(
         client_id=required_env(
@@ -1123,6 +1175,14 @@ def build_gateway() -> FastMCP:
             "target system."
         ),
         auth=auth,
+    )
+
+    # --------------------------------------------------------
+    # Diagnostic marker
+    # --------------------------------------------------------
+
+    register_gateway_diagnostics(
+        gateway
     )
 
     # --------------------------------------------------------
@@ -1235,10 +1295,9 @@ def build_gateway() -> FastMCP:
 
     else:
         print(
-            (
-                "Skipping disabled Cannon "
-                "Microsoft 365 integration."
-            )
+            "Skipping disabled Cannon "
+            "Microsoft 365 integration.",
+            flush=True,
         )
 
     # --------------------------------------------------------
@@ -1255,11 +1314,16 @@ def build_gateway() -> FastMCP:
 
     else:
         print(
-            (
-                "Skipping disabled Knoco "
-                "Microsoft 365 integration."
-            )
+            "Skipping disabled Knoco "
+            "Microsoft 365 integration.",
+            flush=True,
         )
+
+    print(
+        "Gateway build complete. "
+        f"Build ID: {BUILD_ID}",
+        flush=True,
+    )
 
     return gateway
 
