@@ -1,46 +1,19 @@
 import os
 import base64
-import tempfile
+import hashlib
 
 import msal
 import requests
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.serialization import pkcs12
 from fastmcp import FastMCP
-
 from fastmcp.server.auth.providers.azure import AzureProvider
 
-def cannon_graph_token() -> str:
-    tenant_id = required_env("CANNON_TENANT_ID")
-    client_id = required_env("CANNON_CLIENT_ID")
-    pfx_base64 = required_env("CANNON_CERT_PFX_BASE64")
-    pfx_password = required_env("CANNON_CERT_PASSWORD")
 
-    pfx_bytes = base64.b64decode(pfx_base64)
+GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0"
 
-    with tempfile.NamedTemporaryFile(suffix=".pfx") as tmp:
-        tmp.write(pfx_bytes)
-        tmp.flush()
 
-        app = msal.ConfidentialClientApplication(
-            client_id=client_id,
-            authority=f"https://login.microsoftonline.com/{tenant_id}",
-            client_credential={
-                "private_key": tmp.name,
-                "passphrase": pfx_password,
-            },
-        )
-
-        result = app.acquire_token_for_client(
-            scopes=["https://graph.microsoft.com/.default"]
-        )
-
-    if "access_token" not in result:
-        raise RuntimeError(
-            f"Cannon Graph authentication failed: "
-            f"{result.get('error_description', result)}"
-        )
-
-    return result["access_token"]
 def required_env(name: str) -> str:
     value = os.getenv(name)
     if not value:
@@ -55,12 +28,129 @@ def env_enabled(name: str, default: bool = True) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def cannon_graph_token() -> str:
+    """
+    Acquire an app-only Microsoft Graph access token for
+    Cannon-Lear Enterprises using certificate authentication.
+    """
+    tenant_id = required_env("CANNON_TENANT_ID")
+    client_id = required_env("CANNON_CLIENT_ID")
+    pfx_base64 = required_env("CANNON_CERT_PFX_BASE64")
+    pfx_password = required_env("CANNON_CERT_PASSWORD")
+
+    try:
+        pfx_bytes = base64.b64decode(pfx_base64)
+
+        private_key, certificate, _additional_certificates = (
+            pkcs12.load_key_and_certificates(
+                pfx_bytes,
+                pfx_password.encode("utf-8"),
+            )
+        )
+
+        if private_key is None:
+            raise RuntimeError(
+                "Cannon certificate does not contain a private key."
+            )
+
+        if certificate is None:
+            raise RuntimeError(
+                "Cannon certificate does not contain a public certificate."
+            )
+
+        private_key_pem = private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode("utf-8")
+
+        cert_der = certificate.public_bytes(
+            encoding=serialization.Encoding.DER
+        )
+
+        thumbprint = hashlib.sha1(cert_der).hexdigest()
+
+        app = msal.ConfidentialClientApplication(
+            client_id=client_id,
+            authority=f"https://login.microsoftonline.com/{tenant_id}",
+            client_credential={
+                "private_key": private_key_pem,
+                "thumbprint": thumbprint,
+            },
+        )
+
+        result = app.acquire_token_for_client(
+            scopes=["https://graph.microsoft.com/.default"]
+        )
+
+        if "access_token" not in result:
+            error = result.get("error", "unknown_error")
+            description = result.get(
+                "error_description",
+                "No additional error information returned.",
+            )
+
+            raise RuntimeError(
+                f"Microsoft Entra token acquisition failed: "
+                f"{error}: {description}"
+            )
+
+        return result["access_token"]
+
+    except Exception as exc:
+        raise RuntimeError(
+            f"Unable to authenticate CANNON-Jarvis-MCP: {exc}"
+        ) from exc
+
+
+def cannon_graph_request(
+    method: str,
+    endpoint: str,
+    *,
+    json_body: dict | None = None,
+    params: dict | None = None,
+) -> dict:
+    """
+    Execute an authenticated Microsoft Graph request
+    using the Cannon service principal.
+    """
+    token = cannon_graph_token()
+
+    response = requests.request(
+        method=method,
+        url=f"{GRAPH_BASE_URL}{endpoint}",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        },
+        json=json_body,
+        params=params,
+        timeout=30,
+    )
+
+    if not response.ok:
+        raise RuntimeError(
+            f"Cannon Graph request failed "
+            f"({response.status_code}) "
+            f"{method} {endpoint}: {response.text}"
+        )
+
+    if not response.content:
+        return {}
+
+    return response.json()
+
+
 def wordpress_server(url: str, token_env: str) -> dict:
     token = required_env(token_env)
+
     return {
         "transport": "http",
         "url": url,
-        "headers": {"Authorization": f"Bearer {token}"},
+        "headers": {
+            "Authorization": f"Bearer {token}",
+        },
     }
 
 
@@ -73,44 +163,236 @@ def mount_wordpress_proxy(
     enabled_env: str,
     default_enabled: bool = True,
 ) -> None:
-    """Mount one WordPress MCP server as an independent proxy."""
+    """
+    Mount one WordPress MCP server as an independent proxy.
+    """
     if not env_enabled(enabled_env, default_enabled):
         print(f"Skipping disabled WordPress upstream: {site_name}")
         return
 
-    # Keep each WordPress property in its own proxy so sites can be toggled
-    # independently during maintenance and troubleshooting.
     proxy_config = {
         "mcpServers": {
-            site_name: wordpress_server(url, token_env),
+            site_name: wordpress_server(
+                url,
+                token_env,
+            ),
         }
     }
+
     proxy = FastMCP.as_proxy(
         proxy_config,
         name=f"{site_name} WordPress Upstream",
     )
-    gateway.mount(proxy, namespace=f"wordpress_{site_name}")
-    print(f"Mounted WordPress upstream: {site_name} -> {url}")
+
+    gateway.mount(
+        proxy,
+        namespace=f"wordpress_{site_name}",
+    )
+
+    print(
+        f"Mounted WordPress upstream: "
+        f"{site_name} -> {url}"
+    )
+
+
+def register_cannon_m365_tools(gateway: FastMCP) -> None:
+    """
+    Register Cannon Microsoft 365 read-only tools.
+    """
+
+    @gateway.tool()
+    def cannon_sharepoint_test() -> dict:
+        """
+        Verify Cannon SharePoint access through Microsoft Graph.
+
+        READ ONLY.
+        """
+        data = cannon_graph_request(
+            "GET",
+            "/sites/cannonconet.sharepoint.com:/",
+        )
+
+        return {
+            "success": True,
+            "organization": "Cannon-Lear Enterprises L.L.C.",
+            "tenant": "cannonconet.sharepoint.com",
+            "site": {
+                "id": data.get("id"),
+                "name": data.get("name"),
+                "displayName": data.get("displayName"),
+                "webUrl": data.get("webUrl"),
+            },
+        }
+
+    @gateway.tool()
+    def cannon_sharepoint_get_site(
+        hostname: str,
+        site_path: str = "/",
+    ) -> dict:
+        """
+        Retrieve metadata for a Cannon SharePoint site.
+
+        READ ONLY.
+        """
+        if not hostname.lower().endswith(
+            "cannonconet.sharepoint.com"
+        ):
+            raise ValueError(
+                "This tool is restricted to "
+                "cannonconet.sharepoint.com."
+            )
+
+        if not site_path.startswith("/"):
+            site_path = f"/{site_path}"
+
+        data = cannon_graph_request(
+            "GET",
+            f"/sites/{hostname}:{site_path}",
+        )
+
+        return {
+            "id": data.get("id"),
+            "name": data.get("name"),
+            "displayName": data.get("displayName"),
+            "webUrl": data.get("webUrl"),
+            "description": data.get("description"),
+            "createdDateTime": data.get("createdDateTime"),
+            "lastModifiedDateTime": data.get(
+                "lastModifiedDateTime"
+            ),
+        }
+
+    @gateway.tool()
+    def cannon_sharepoint_list_lists(
+        site_id: str,
+    ) -> dict:
+        """
+        List SharePoint lists and document libraries.
+
+        READ ONLY.
+        """
+        data = cannon_graph_request(
+            "GET",
+            f"/sites/{site_id}/lists",
+            params={
+                "$select": (
+                    "id,name,displayName,"
+                    "webUrl,list,createdDateTime,"
+                    "lastModifiedDateTime"
+                )
+            },
+        )
+
+        return {
+            "count": len(data.get("value", [])),
+            "items": data.get("value", []),
+        }
+
+    @gateway.tool()
+    def cannon_sharepoint_list_drives(
+        site_id: str,
+    ) -> dict:
+        """
+        List document libraries exposed as drives.
+
+        READ ONLY.
+        """
+        data = cannon_graph_request(
+            "GET",
+            f"/sites/{site_id}/drives",
+        )
+
+        return {
+            "count": len(data.get("value", [])),
+            "drives": data.get("value", []),
+        }
+
+    @gateway.tool()
+    def cannon_sharepoint_get_list_items(
+        site_id: str,
+        list_id: str,
+        top: int = 25,
+    ) -> dict:
+        """
+        Retrieve SharePoint list items.
+
+        READ ONLY.
+        """
+        if top < 1:
+            top = 1
+
+        if top > 200:
+            top = 200
+
+        data = cannon_graph_request(
+            "GET",
+            f"/sites/{site_id}/lists/{list_id}/items",
+            params={
+                "$expand": "fields",
+                "$top": str(top),
+            },
+        )
+
+        return {
+            "count": len(data.get("value", [])),
+            "items": data.get("value", []),
+            "nextLink": data.get("@odata.nextLink"),
+        }
+
+    @gateway.tool()
+    def cannon_sharepoint_list_drive_root(
+        drive_id: str,
+    ) -> dict:
+        """
+        List files and folders in the root of a document library.
+
+        READ ONLY.
+        """
+        data = cannon_graph_request(
+            "GET",
+            f"/drives/{drive_id}/root/children",
+        )
+
+        return {
+            "count": len(data.get("value", [])),
+            "items": data.get("value", []),
+            "nextLink": data.get("@odata.nextLink"),
+        }
+
+    print(
+        "Registered Cannon Microsoft 365 "
+        "read-only diagnostic tools."
+    )
 
 
 def build_gateway() -> FastMCP:
-    # Protect the public gateway with Microsoft Entra ID. These values are
-    # supplied as Azure Container App secrets/environment variables and are
-    # never committed to GitHub.
+    """
+    Build the unified Knoco/Cannon MCP gateway.
+    """
+
     auth = AzureProvider(
         client_id=required_env("AZURE_MCP_CLIENT_ID"),
         client_secret=required_env("AZURE_MCP_CLIENT_SECRET"),
         tenant_id=required_env("AZURE_MCP_TENANT_ID"),
         base_url=required_env("MCP_PUBLIC_BASE_URL"),
         required_scopes=["mcp-access"],
-        additional_authorize_scopes=["openid", "profile", "email", "offline_access"],
+        additional_authorize_scopes=[
+            "openid",
+            "profile",
+            "email",
+            "offline_access",
+        ],
     )
 
     gateway = FastMCP(
         name="Knoco Enterprise MCP Gateway",
         instructions=(
-            "Unified, authenticated gateway for Knoco International and CannonCo "
-            "WordPress properties. WordPress tools are namespaced by target site."
+            "Unified authenticated MCP gateway for "
+            "Knoco International and CannonCo. "
+            "Provides governed access to WordPress "
+            "and Microsoft 365 services. "
+            "Tools are explicitly namespaced by "
+            "organization and target system."
         ),
         auth=auth,
     )
@@ -118,39 +400,71 @@ def build_gateway() -> FastMCP:
     mount_wordpress_proxy(
         gateway,
         site_name="knoco_main",
-        url="https://knoco.com/wp-json/easy-mcp-ai/v1/mcp",
+        url=(
+            "https://knoco.com/"
+            "wp-json/easy-mcp-ai/v1/mcp"
+        ),
         token_env="KNOCO_MAIN_TOKEN",
         enabled_env="KNOCO_MAIN_ENABLED",
     )
+
     mount_wordpress_proxy(
         gateway,
         site_name="knoco_institute",
-        url="https://institute.knoco.com/wp-json/easy-mcp-ai/v1/mcp",
+        url=(
+            "https://institute.knoco.com/"
+            "wp-json/easy-mcp-ai/v1/mcp"
+        ),
         token_env="KNOCO_INSTITUTE_TOKEN",
         enabled_env="KNOCO_INSTITUTE_ENABLED",
     )
+
     mount_wordpress_proxy(
         gateway,
         site_name="knoco_trainingtest",
-        url="https://trainingtest.knoco.com/wp-json/easy-mcp-ai/v1/mcp",
+        url=(
+            "https://trainingtest.knoco.com/"
+            "wp-json/easy-mcp-ai/v1/mcp"
+        ),
         token_env="KNOCO_TRAININGTEST_TOKEN",
         enabled_env="KNOCO_TRAININGTEST_ENABLED",
     )
+
     mount_wordpress_proxy(
         gateway,
         site_name="cannonco_main",
-        url="https://cannonco.net/wp-json/easy-mcp-ai/v1/mcp",
+        url=(
+            "https://cannonco.net/"
+            "wp-json/easy-mcp-ai/v1/mcp"
+        ),
         token_env="CANNONCO_MAIN_TOKEN",
         enabled_env="CANNONCO_MAIN_ENABLED",
     )
+
     mount_wordpress_proxy(
         gateway,
         site_name="cannonco_books",
-        url="https://books.cannonco.net/wp-json/easy-mcp-ai/v1/mcp",
+        url=(
+            "https://books.cannonco.net/"
+            "wp-json/easy-mcp-ai/v1/mcp"
+        ),
         token_env="CANNONCO_BOOKS_TOKEN",
         enabled_env="CANNONCO_BOOKS_ENABLED",
         default_enabled=False,
     )
+
+    if env_enabled(
+        "CANNON_M365_ENABLED",
+        default=True,
+    ):
+        register_cannon_m365_tools(
+            gateway
+        )
+    else:
+        print(
+            "Skipping disabled Cannon "
+            "Microsoft 365 integration."
+        )
 
     return gateway
 
@@ -159,5 +473,16 @@ mcp = build_gateway()
 
 
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", "8000"))
-    mcp.run(transport="http", host="0.0.0.0", port=port, path="/mcp")
+    port = int(
+        os.getenv(
+            "PORT",
+            "8000",
+        )
+    )
+
+    mcp.run(
+        transport="http",
+        host="0.0.0.0",
+        port=port,
+        path="/mcp",
+    )
