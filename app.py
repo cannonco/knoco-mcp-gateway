@@ -38,7 +38,7 @@ from fastmcp import Client, FastMCP
 from fastmcp.server.auth.providers.azure import AzureProvider
 
 
-BUILD_ID = "20260915-unified-fullaccess-v1"
+BUILD_ID = "20260915-unified-fullaccess-v2"
 GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0"
 POWER_PLATFORM_BASE_URL = "https://api.bap.microsoft.com"
 DEFAULT_TIMEOUT = 60

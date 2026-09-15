@@ -1,4 +1,8 @@
-fastmcp>=3.3.1,<4
+# Pin FastMCP to the last stable 3.x release used by this gateway.
+# The azure extra provides the AzureProvider dependencies.
+# The tasks extra ensures the task-routing package is installed; without it,
+# some MCP hosts can fail with: No module named 'fastmcp.server.tasks.routing'.
+fastmcp[azure,tasks]==3.4.7
 msal>=1.31,<2
 requests>=2.32,<3
 cryptography>=43,<46
