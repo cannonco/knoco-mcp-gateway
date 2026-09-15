@@ -1,4 +1,6 @@
 import os
+import asyncio
+from datetime import datetime, timezone
 import base64
 import hashlib
 
@@ -7,13 +9,13 @@ import requests
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.serialization import pkcs12
-from fastmcp import FastMCP
+from fastmcp import FastMCP, Client
 from fastmcp.server.auth.providers.azure import AzureProvider
 
 
 GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0"
 
-BUILD_ID = "20260914-knoco-m365-diagnostic-v1"
+BUILD_ID = "20260915-wordpress-diagnostic-v2"
 
 
 def required_env(name: str) -> str:
@@ -397,13 +399,16 @@ def knoco_graph_request(
 # WordPress proxy configuration
 # ============================================================
 
+WORDPRESS_UPSTREAMS = {}
+
+
 def wordpress_server(
     url: str,
     token_env: str,
 ) -> dict:
-    token = required_env(
-        token_env
-    )
+    token = required_env(token_env).strip()
+    if not token:
+        raise RuntimeError(f"Empty credential: {token_env}")
 
     return {
         "transport": "http",
@@ -430,10 +435,17 @@ def mount_wordpress_proxy(
     as an independent proxy.
     """
 
-    if not env_enabled(
-        enabled_env,
-        default_enabled,
-    ):
+    enabled = env_enabled(enabled_env, default_enabled)
+    WORDPRESS_UPSTREAMS[site_name] = {
+        "url": url,
+        "token_env": token_env,
+        "enabled_env": enabled_env,
+        "enabled": enabled,
+        "token_present": bool(os.getenv(token_env, "").strip()),
+        "namespace": f"wordpress_{site_name}",
+        "mounted": False,
+    }
+    if not enabled:
         print(
             "Skipping disabled "
             "WordPress upstream: "
@@ -441,6 +453,10 @@ def mount_wordpress_proxy(
             flush=True,
         )
 
+        return
+
+    if not WORDPRESS_UPSTREAMS[site_name]["token_present"]:
+        print(f"WordPress upstream {site_name}: missing {token_env}", flush=True)
         return
 
     proxy_config = {
@@ -467,11 +483,59 @@ def mount_wordpress_proxy(
         ),
     )
 
+    WORDPRESS_UPSTREAMS[site_name]["mounted"] = True
+
     print(
-        "Mounted WordPress upstream: "
+        "Registered WordPress proxy (connectivity not yet tested): "
         f"{site_name} -> {url}",
         flush=True,
     )
+
+
+async def probe_wordpress_upstream(site_name: str) -> dict:
+    """Initialize MCP and list tools; never execute upstream tools."""
+    state = WORDPRESS_UPSTREAMS[site_name]
+    result = {"site": site_name, **state,
+              "checked_at": datetime.now(timezone.utc).isoformat()}
+    if not state["enabled"]:
+        return {**result, "status": "disabled"}
+    if not state["token_present"]:
+        return {**result, "status": "missing_token"}
+
+    async def discover():
+        config = {"mcpServers": {site_name: wordpress_server(
+            state["url"], state["token_env"])}}
+        async with Client(config) as client:
+            return await client.list_tools()
+
+    try:
+        discovered = await asyncio.wait_for(discover(), timeout=30)
+        return {**result, "status": "ok" if discovered else "no_tools",
+                "tool_count": len(discovered),
+                "tool_names": sorted(tool.name for tool in discovered)}
+    except Exception as exc:
+        # Do not return raw exceptions: upstream bodies can contain credentials.
+        errors = [exc]
+        seen = set()
+        statuses = set()
+        kinds = set()
+        while errors:
+            error = errors.pop()
+            if id(error) in seen:
+                continue
+            seen.add(id(error))
+            kinds.add(type(error).__name__)
+            response = getattr(error, "response", None)
+            status = getattr(response, "status_code", None)
+            if isinstance(status, int):
+                statuses.add(status)
+            errors.extend(getattr(error, "exceptions", ()))
+            if error.__cause__:
+                errors.append(error.__cause__)
+            elif error.__context__:
+                errors.append(error.__context__)
+        return {**result, "status": "error", "error_types": sorted(kinds),
+                "http_status_codes": sorted(statuses)}
 
 
 # ============================================================
@@ -497,6 +561,7 @@ def register_gateway_diagnostics(
 
         return {
             "build_id": BUILD_ID,
+            "wordpress_upstreams": {k: dict(v) for k, v in WORDPRESS_UPSTREAMS.items()},
             "gateway": (
                 "Knoco Enterprise MCP Gateway"
             ),
@@ -553,6 +618,19 @@ def register_gateway_diagnostics(
                 ),
             },
         }
+
+    @gateway.tool()
+    async def gateway_wordpress_audit(site_name: str = "all") -> dict:
+        """READ ONLY. Check configured WordPress MCP authentication and tool discovery.
+
+        site_name: all, knoco_main, cannonco_main, cannonco_books,
+        knoco_institute, or knoco_trainingtest. Does not create or change content.
+        """
+        if site_name != "all" and site_name not in WORDPRESS_UPSTREAMS:
+            return {"error": "Unknown site", "allowed_sites": sorted(WORDPRESS_UPSTREAMS)}
+        names = list(WORDPRESS_UPSTREAMS) if site_name == "all" else [site_name]
+        return {"build_id": BUILD_ID, "sites": await asyncio.gather(
+            *(probe_wordpress_upstream(name) for name in names))}
 
     print(
         "Registered gateway diagnostic tools. "
@@ -1136,6 +1214,8 @@ def build_gateway() -> FastMCP:
         flush=True,
     )
 
+    WORDPRESS_UPSTREAMS.clear()
+
     auth = AzureProvider(
         client_id=required_env(
             "AZURE_MCP_CLIENT_ID"
@@ -1278,7 +1358,7 @@ def build_gateway() -> FastMCP:
         enabled_env=(
             "CANNONCO_BOOKS_ENABLED"
         ),
-        default_enabled=False,
+        default_enabled=True,
     )
 
     # --------------------------------------------------------
